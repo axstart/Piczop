@@ -34,6 +34,25 @@ def app_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
+def _local_appdata_library() -> Path:
+    base = os.environ.get("LOCALAPPDATA")
+    if base:
+        return Path(base) / "Piczop" / APP_DIR_NAME
+    return Path.home() / "AppData" / "Local" / "Piczop" / APP_DIR_NAME
+
+
+def _can_use_library_at(root: Path) -> bool:
+    """True when we can create the library folder and write inside it."""
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        probe = root / f".piczop_write_{os.getpid()}"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+        return True
+    except OSError:
+        return False
+
+
 def _bundled_library_template() -> Path | None:
     candidates: list[Path] = []
     if getattr(sys, "frozen", False):
@@ -41,6 +60,7 @@ def _bundled_library_template() -> Path | None:
         if meipass:
             candidates.append(Path(meipass) / APP_DIR_NAME)
         candidates.append(Path(sys.executable).resolve().parent / "_internal" / APP_DIR_NAME)
+        candidates.append(Path(sys.executable).resolve().parent / APP_DIR_NAME)
     else:
         candidates.append(Path(__file__).resolve().parent.parent / "assets" / APP_DIR_NAME)
     for path in candidates:
@@ -49,10 +69,21 @@ def _bundled_library_template() -> Path | None:
     return None
 
 
+def resolve_library_root() -> tuple[Path, bool]:
+    """Return (library path, first_run). Prefer next-to-exe when writable; else LocalAppData."""
+    beside_exe = app_root() / APP_DIR_NAME
+    beside_existed = beside_exe.exists()
+    if _can_use_library_at(beside_exe):
+        return beside_exe, not beside_existed
+    if getattr(sys, "frozen", False):
+        appdata = _local_appdata_library()
+        return appdata, not appdata.exists()
+    return beside_exe, not beside_existed
+
+
 def library_root() -> Path:
-    """Media library lives next to the exe (or project root), never inside _MEIPASS."""
-    root = app_root() / APP_DIR_NAME
-    first_run = not root.exists()
+    """Media library for photos/videos/catalog. Never inside _MEIPASS."""
+    root, first_run = resolve_library_root()
     if first_run:
         template = _bundled_library_template()
         if template is not None:

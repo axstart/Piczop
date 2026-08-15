@@ -29,6 +29,7 @@ if (Test-Path $Template) {
 }
 
 Write-Host "Built $Exe"
-Write-Host "First-run library folder: $Lib"
-Write-Host "Portable: copy the entire dist\Piczop folder to a USB stick or Program Files."
-Write-Host "Optional installer: compile installer\piczop.iss with Inno Setup (ISCC)."
+Write-Host "First-run library folder (when writable): $Lib"
+Write-Host "If the app dir is read-only (e.g. Program Files), library uses %LOCALAPPDATA%\Piczop\PiczopLibrary."
+Write-Host "Portable: copy the entire dist\Piczop folder to a USB stick."
+Write-Host "Installer: powershell -ExecutionPolicy Bypass -File .\scripts\build-installer.ps1"

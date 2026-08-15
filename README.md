@@ -4,11 +4,14 @@ Portable Windows photo organizer for a USB stick. Plug in the drive, run `Piczop
 
 ## Download (Windows)
 
-Get the portable zip from GitHub Releases (not from Vercel — the app is too large for static hosting):
+Get builds from GitHub Releases (not from Vercel — the app is too large for static hosting):
 
-**https://github.com/axstart/Piczop/releases/latest/download/Piczop-Windows.zip**
+- **Installer:** https://github.com/axstart/Piczop/releases/latest/download/Piczop-Setup.exe  
+  Normal Windows install (Start Menu, optional desktop icon, uninstall entry).
+- **Portable zip:** https://github.com/axstart/Piczop/releases/latest/download/Piczop-Windows.zip  
+  Unzip, run `Piczop.exe`, then copy the whole folder to a USB stick if you want.
 
-Unzip the folder, run `Piczop.exe`, then copy the whole folder to a USB stick if you want it portable.
+After using the installer, you can still copy the installed `Piczop` folder onto a USB stick and run it from there.
 
 ## Windows app
 
@@ -44,20 +47,20 @@ Copy the **entire** `dist\Piczop` folder (not just the exe). Supporting DLLs liv
 
 Copy `dist\Piczop` onto a USB stick or any folder. Double-click `Piczop.exe`. No installer required.
 
-On first run, Piczop creates `PiczopLibrary\` next to `Piczop.exe` (photos, videos, review, trash, thumbs, catalog). That folder is never stored inside the PyInstaller unpack directory.
+On first run, when the app folder is writable, Piczop creates `PiczopLibrary\` next to `Piczop.exe` (photos, videos, review, trash, thumbs, catalog). That folder is never stored inside the PyInstaller unpack directory.
 
-You can also copy that folder to `C:\Program Files\Piczop` if you prefer a fixed install without Inno Setup.
+### Library path (installer vs portable)
 
-### Optional installer
+- **Portable / USB / any writable folder:** `PiczopLibrary` next to `Piczop.exe` (stays on the stick).
+- **Program Files (or other read-only install dir):** `%LOCALAPPDATA%\Piczop\PiczopLibrary` so backups work without admin write access.
 
-If [Inno Setup](https://jrsoftware.org/isinfo.php) is installed:
+### Windows installer
 
 ```powershell
-.\scripts\build-windows.ps1
-& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" .\installer\piczop.iss
+powershell -ExecutionPolicy Bypass -File .\scripts\build-installer.ps1
 ```
 
-The setup exe is written to `dist\Piczop-Setup.exe`. It installs the same onedir tree (Start Menu shortcut; optional desktop icon).
+That script builds `dist\Piczop` if needed, finds or installs [Inno Setup](https://jrsoftware.org/isinfo.php) 6 (`ISCC.exe`), and writes `dist\Piczop-Setup.exe`. Default install directory is `{autopf}\Piczop`. Start Menu shortcut; optional desktop icon; uninstall entry.
 
 ## Put it on a USB stick
 

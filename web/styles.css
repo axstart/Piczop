@@ -39,7 +39,12 @@ h1 {
 
 .lede { color: var(--muted); margin: 0 0 1.5rem; }
 
-.cta-row { margin: 0; }
+.cta-row {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
 .btn {
   display: inline-block;
   background: var(--accent);
@@ -51,6 +56,16 @@ h1 {
   font-size: 1.05rem;
 }
 .btn:hover { background: var(--accent-hover); }
+.btn-secondary {
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--muted);
+}
+.btn-secondary:hover {
+  background: var(--card);
+  border-color: var(--accent);
+  color: var(--accent);
+}
 
 .hint { color: var(--muted); font-size: 0.9rem; margin-top: 0.75rem; }
 

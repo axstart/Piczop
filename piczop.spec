@@ -1,44 +1,60 @@
 # -*- mode: python ; coding: utf-8 -*-
 
-from PyInstaller.utils.hooks import collect_all
-
 datas = [
     ("assets\\piczop.ico", "assets"),
     ("assets\\PiczopLibrary", "PiczopLibrary"),
 ]
 binaries = []
-hiddenimports = []
-tmp_ret = collect_all("PySide6")
-datas += tmp_ret[0]
-binaries += tmp_ret[1]
-hiddenimports += tmp_ret[2]
+hiddenimports = [
+    "app",
+    "app.ui",
+    "app.ui.main_window",
+    "app.organize",
+    "app.gallery",
+    "app.hashing",
+    "app.media_meta",
+    "app.people",
+    "app.suggestions",
+    "app.enrich",
+    "app.paths",
+    "PIL",
+    "PIL.Image",
+    "PIL.ImageOps",
+    "PIL.ExifTags",
+    "PySide6.QtCore",
+    "PySide6.QtGui",
+    "PySide6.QtWidgets",
+    "PySide6.QtNetwork",
+]
 
 a = Analysis(
     ["app\\main.py"],
     pathex=[],
     binaries=binaries,
     datas=datas,
-    hiddenimports=hiddenimports
-    + [
-        "app",
-        "app.ui",
-        "app.ui.main_window",
-        "app.organize",
-        "app.gallery",
-        "app.hashing",
-        "app.media_meta",
-        "app.people",
-        "app.suggestions",
-        "app.enrich",
-        "PIL",
-        "PIL.Image",
-        "PIL.ImageOps",
-        "PIL.ExifTags",
-    ],
+    hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=[
+        "PySide6.Qt3DAnimation",
+        "PySide6.Qt3DCore",
+        "PySide6.Qt3DExtras",
+        "PySide6.Qt3DInput",
+        "PySide6.Qt3DLogic",
+        "PySide6.Qt3DRender",
+        "PySide6.QtCharts",
+        "PySide6.QtDataVisualization",
+        "PySide6.QtQuick",
+        "PySide6.QtQml",
+        "PySide6.QtWebEngineCore",
+        "PySide6.QtWebEngineWidgets",
+        "PySide6.QtBluetooth",
+        "PySide6.QtMultimedia",
+        "PySide6.QtMultimediaWidgets",
+        "tkinter",
+        "matplotlib",
+    ],
     noarchive=False,
 )
 pyz = PYZ(a.pure)

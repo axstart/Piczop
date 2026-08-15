@@ -1,0 +1,20 @@
+Piczop installer
+================
+
+This setup installs Piczop like a normal Windows app (Start Menu shortcut,
+optional desktop icon, Add/Remove Programs entry).
+
+Library location
+----------------
+• Portable / USB: if you copy the install folder to a writable location
+  (for example a USB stick), Piczop stores photos in PiczopLibrary next
+  to Piczop.exe.
+• Program Files: when the app folder is not writable, the library is stored
+  under %LOCALAPPDATA%\Piczop\PiczopLibrary so backups still work without
+  admin rights.
+
+Want it on a USB stick?
+-----------------------
+After install you can still copy the whole Piczop folder from the install
+directory onto a flash drive and run Piczop.exe from there. Or download the
+portable zip from GitHub Releases instead of using this installer.

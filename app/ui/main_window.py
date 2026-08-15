@@ -30,7 +30,14 @@ from app.backup import BackupJob, BackupStats
 from app.catalog import Catalog
 from app.enrich import enrich_library
 from app.gallery import ensure_thumb, files_for_month
-from app.paths import drive_free_bytes, format_bytes, is_removable_drive, library_root
+from app.paths import (
+    LOW_SPACE_WARN_BYTES,
+    assess_library_space,
+    drive_free_bytes,
+    format_bytes,
+    is_removable_drive,
+    library_root,
+)
 from app.people import face_engine_available
 from app.settings import AppSettings
 from app.suggestions import (
@@ -302,8 +309,29 @@ class MainWindow(QWidget):
         removable = is_removable_drive()
         where = "USB stick" if removable else "this folder (copy Piczop onto a USB for portable use)"
         self.lbl_location.setText(f"Library: {lib}\nRunning from {where}")
-        free, total = drive_free_bytes()
-        self.lbl_space.setText(f"Drive space: {format_bytes(free)} free of {format_bytes(total)}")
+        try:
+            level, free, total, message = assess_library_space()
+            space_text = f"Drive space: {format_bytes(free)} free of {format_bytes(total)}"
+            if level == "block":
+                space_text += f"\nNot enough free space — free up room before backing up."
+            elif level == "warn":
+                space_text += (
+                    f"\nLow space (under {format_bytes(LOW_SPACE_WARN_BYTES)}) — "
+                    "backup may fail if the drive fills up."
+                )
+            self.lbl_space.setText(space_text)
+            if level in ("warn", "block"):
+                self.lbl_space.setToolTip(message)
+                self.lbl_space.setStyleSheet("color: #b45309;")
+            else:
+                self.lbl_space.setToolTip("")
+                self.lbl_space.setStyleSheet("")
+        except OSError as exc:
+            self.lbl_space.setText(
+                "Drive space: unavailable — is the library drive connected?"
+            )
+            self.lbl_space.setToolTip(str(exc))
+            self.lbl_space.setStyleSheet("color: #b45309;")
         last = self.catalog.last_backup()
         if last:
             self.lbl_last.setText(
@@ -328,7 +356,11 @@ class MainWindow(QWidget):
         self.lbl_phase.setFont(QFont("Segoe UI", 18, QFont.Weight.Bold))
         self.lbl_current = QLabel("")
         self.lbl_current.setWordWrap(True)
+        self.lbl_current.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.lbl_counts = QLabel("")
+        self.lbl_counts.setWordWrap(True)
+        self.lbl_eta = QLabel("")
+        self.lbl_eta.setObjectName("muted")
         self.bar = QProgressBar()
         self.bar.setRange(0, 0)
         row = QHBoxLayout()
@@ -344,6 +376,7 @@ class MainWindow(QWidget):
         layout.addWidget(self.lbl_phase)
         layout.addWidget(self.bar)
         layout.addWidget(self.lbl_counts)
+        layout.addWidget(self.lbl_eta)
         layout.addWidget(self.lbl_current)
         layout.addStretch()
         layout.addLayout(row)
@@ -676,7 +709,13 @@ class MainWindow(QWidget):
         self.worker.finished.connect(self.thread.quit)
         self.bar.setRange(0, 0)
         self.btn_pause.setText("Pause")
+        self.lbl_phase.setText("Starting…")
+        self.lbl_counts.setText("")
+        self.lbl_eta.setText("Estimating…")
+        self.lbl_current.setText("")
+        self.lbl_current.setToolTip("")
         self._show(PAGE_PROGRESS)
+        self.thread.start()
 
     def _toggle_pause(self) -> None:
         if not self.job:
@@ -692,20 +731,54 @@ class MainWindow(QWidget):
         if stats.phase == "scan":
             self.lbl_phase.setText("Finding photos and videos…")
             self.bar.setRange(0, 0)
-            self.lbl_counts.setText(f"Found {stats.found} files")
-        else:
+            self.lbl_counts.setText(f"Found {stats.found} so far…")
+            self.lbl_eta.setText("Estimating…")
+        elif stats.phase == "copy":
             self.lbl_phase.setText("Copying to this stick…")
-            total = max(stats.found, 1)
-            done = stats.copied + stats.skipped + stats.errors
-            self.bar.setRange(0, total)
+            total = stats.total if stats.total is not None else max(stats.found, 1)
+            done = stats.processed
+            remaining = (
+                stats.remaining
+                if stats.remaining is not None
+                else max(0, total - done)
+            )
+            self.bar.setRange(0, max(total, 1))
             self.bar.setValue(min(done, total))
             self.lbl_counts.setText(
+                f"Total {total}  ·  Done {done}  ·  Remaining {remaining}\n"
                 f"Copied {stats.copied}  ·  Skipped exact {stats.skipped}  ·  "
                 f"Similar to review {stats.proposed_near}  ·  "
                 f"Held in review folder {stats.held_for_review}  ·  "
                 f"Errors {stats.errors}  ·  {format_bytes(stats.bytes_copied)}"
             )
-        self.lbl_current.setText(stats.current)
+            self.lbl_eta.setText(stats.eta_text)
+        else:
+            # done / cancelled final tick
+            self.lbl_phase.setText("Finishing…")
+            if stats.total is not None:
+                self.bar.setRange(0, max(stats.total, 1))
+                self.bar.setValue(min(stats.processed, stats.total))
+            self.lbl_counts.setText(
+                f"Total {stats.total if stats.total is not None else stats.found}  ·  "
+                f"Done {stats.processed}  ·  Remaining {stats.remaining or 0}"
+            )
+            self.lbl_eta.setText(stats.eta_text if stats.remaining else "")
+
+        self.lbl_current.setText(self._format_current_file(stats.current))
+        self.lbl_current.setToolTip(stats.current if stats.current else "")
+
+    @staticmethod
+    def _format_current_file(current: str) -> str:
+        if not current or current == "Cancelled":
+            return current
+        try:
+            path = Path(current)
+            name = path.name
+            if name and name != current:
+                return f"Reviewing: {name}\n{current}"
+        except Exception:
+            pass
+        return f"Reviewing: {current}"
 
     def _on_finished(self, stats: BackupStats) -> None:
         self.last_stats = stats

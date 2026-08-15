@@ -3,7 +3,7 @@
 ; Prefer: powershell -ExecutionPolicy Bypass -File .\scripts\build-installer.ps1
 
 #define MyAppName "Piczop"
-#define MyAppVersion "1.0.1"
+#define MyAppVersion "1.0.2"
 #define MyAppPublisher "Piczop"
 #define MyAppExeName "Piczop.exe"
 #define MyAppURL "https://github.com/axstart/Piczop"

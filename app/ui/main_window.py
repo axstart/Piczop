@@ -33,7 +33,6 @@ from app.gallery import ensure_thumb, files_for_month
 from app.paths import (
     LOW_SPACE_WARN_BYTES,
     assess_library_space,
-    drive_free_bytes,
     format_bytes,
     is_removable_drive,
     library_root,
@@ -699,6 +698,30 @@ class MainWindow(QWidget):
     def start_backup(self) -> None:
         if self.thread and self.thread.isRunning():
             return
+        try:
+            level, _free, _total, message = assess_library_space()
+        except OSError as exc:
+            QMessageBox.warning(
+                self,
+                "Piczop",
+                "Cannot read free space on the library drive. "
+                "Is the USB still connected?\n\n"
+                f"({exc})",
+            )
+            return
+        if level == "block":
+            QMessageBox.warning(self, "Piczop", message)
+            return
+        if level == "warn":
+            reply = QMessageBox.question(
+                self,
+                "Piczop",
+                f"{message}\n\nContinue anyway?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
         self.job = BackupJob(self.catalog, self.settings)
         self.thread = QThread()
         self.worker = BackupWorker(self.job)
@@ -728,6 +751,12 @@ class MainWindow(QWidget):
             self.job.cancel()
 
     def _on_progress(self, stats: BackupStats) -> None:
+        if stats.abort_reason:
+            self.lbl_phase.setText("Backup stopped")
+            self.lbl_eta.setText("")
+            self.lbl_current.setText(stats.abort_reason)
+            self.lbl_current.setToolTip(stats.abort_reason)
+            return
         if stats.phase == "scan":
             self.lbl_phase.setText("Finding photos and videos…")
             self.bar.setRange(0, 0)
@@ -751,7 +780,10 @@ class MainWindow(QWidget):
                 f"Held in review folder {stats.held_for_review}  ·  "
                 f"Errors {stats.errors}  ·  {format_bytes(stats.bytes_copied)}"
             )
-            self.lbl_eta.setText(stats.eta_text)
+            eta = stats.eta_text
+            if stats.space_warning:
+                eta = f"{eta}  ·  {stats.space_warning}" if eta else stats.space_warning
+            self.lbl_eta.setText(eta)
         else:
             # done / cancelled final tick
             self.lbl_phase.setText("Finishing…")
@@ -783,11 +815,28 @@ class MainWindow(QWidget):
     def _on_finished(self, stats: BackupStats) -> None:
         self.last_stats = stats
         pending = self.catalog.pending_review_count()
+        if stats.abort_reason:
+            self.lbl_summary.setText(
+                f"Backup stopped.\n\n"
+                f"{stats.abort_reason}\n\n"
+                f"Found: {stats.found}\n"
+                f"Copied before stop: {stats.copied}\n"
+                f"Skipped (exact match): {stats.skipped}\n"
+                f"Errors: {stats.errors}\n"
+                f"Bytes copied: {format_bytes(stats.bytes_copied)}"
+            )
+            self.btn_summary_review.setVisible(pending > 0)
+            self._show(PAGE_SUMMARY)
+            self.refresh_home()
+            return
         extra = ""
         if stats.error_messages:
             extra = "\n\nSome files could not be copied:\n" + "\n".join(
                 stats.error_messages[:8]
             )
+        warn = ""
+        if stats.space_warning:
+            warn = f"\n\nNote: {stats.space_warning}"
         self.lbl_summary.setText(
             f"Backup finished.\n\n"
             f"Found: {stats.found}\n"
@@ -798,6 +847,7 @@ class MainWindow(QWidget):
             f"{pending} duplicate group{'s' if pending != 1 else ''} need your review.\n"
             f"Errors: {stats.errors}\n"
             f"Bytes copied: {format_bytes(stats.bytes_copied)}"
+            f"{warn}"
             f"{extra}"
         )
         self.btn_summary_review.setVisible(pending > 0)

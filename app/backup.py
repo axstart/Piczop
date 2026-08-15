@@ -8,17 +8,22 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from app.catalog import Catalog
-from app.hashing import full_sha256, perceptual_hash, quick_key
+from app.hashing import NearDupIndex, full_sha256, perceptual_hash, quick_key
+from app.logging_setup import get_logger
 from app.media_date import taken_at
 from app.media_meta import enrich_path
 from app.organize import ORIGIN_SCREENSHOT, classify_origin, smart_filename
-from app.paths import assess_library_space, library_root, review_root
+from app.paths import assess_library_space, drive_free_bytes, library_root, review_root
 from app.scan import default_roots, iter_media
 from app.settings import AppSettings
 
 # Minimum completed files / elapsed seconds before ETA is shown.
 _ETA_MIN_PROCESSED = 3
 _ETA_MIN_ELAPSED = 1.0
+# Sample current path at DEBUG only (avoid INFO flood of every file).
+_DEBUG_FILE_SAMPLE = 50
+
+_log = get_logger()
 
 # Windows winerror codes that mean disk full / drive gone / not ready.
 _STORAGE_WINERRORS = {
@@ -93,20 +98,7 @@ class BackupStorageError(Exception):
         super().__init__(message)
 
 
-def _library_drive_unreachable() -> bool:
-    try:
-        root = library_root()
-        if not root.exists():
-            return True
-        from app.paths import drive_free_bytes
-
-        drive_free_bytes(root)
-        return False
-    except OSError:
-        return True
-
-
-def _is_storage_oserror(exc: OSError) -> bool:
+def _is_storage_oserror(exc: OSError, library: Path | None = None) -> bool:
     if exc.errno in _STORAGE_ERRNOS:
         return True
     winerr = getattr(exc, "winerror", None)
@@ -126,8 +118,25 @@ def _is_storage_oserror(exc: OSError) -> bool:
         return True
     # Path-not-found mid-copy usually means the stick vanished — confirm via free-space probe.
     if winerr in (2, 3) or exc.errno == errno.ENOENT:
-        return _library_drive_unreachable()
+        return _library_drive_unreachable(library)
     return False
+
+
+def _library_drive_unreachable(library: Path | None = None) -> bool:
+    """True when the job's library path (not a re-resolved AppData fallback) is gone."""
+    root = library
+    if root is None:
+        try:
+            root = library_root()
+        except OSError:
+            return True
+    try:
+        if not root.exists():
+            return True
+        drive_free_bytes(root)
+        return False
+    except OSError:
+        return True
 
 
 def _storage_message(exc: OSError) -> str:
@@ -172,6 +181,8 @@ class BackupJob:
         self._phase_started: float | None = None
         self._last_tick: float | None = None
         self._last_processed: int = 0
+        # Pin library path for this job so USB removal is not masked by AppData fallback.
+        self._library = library_root()
 
     def cancel(self) -> None:
         self._cancel.set()
@@ -245,11 +256,16 @@ class BackupJob:
         else:
             self.stats.eta_seconds = None
 
+    def _set_phase(self, phase: str) -> None:
+        self.stats.phase = phase
+        _log.info("event=phase phase=%s", phase)
+
     def run(self, on_progress=None) -> BackupStats:
         backup_id = self.catalog.start_backup()
+        _log.info("event=backup_start backup_id=%s", backup_id)
         try:
             roots = default_roots(self.settings)
-            self.stats.phase = "scan"
+            self._set_phase("scan")
             self._update_progress_counts(discovering=True)
             candidates: list[tuple[Path, str]] = []
             for path, kind in iter_media(
@@ -259,6 +275,8 @@ class BackupJob:
                 candidates.append((path, kind))
                 self.stats.found = len(candidates)
                 self.stats.current = str(path)
+                if self.stats.found == 1 or self.stats.found % _DEBUG_FILE_SAMPLE == 0:
+                    _log.debug("event=current_file phase=scan path=%s", path)
                 self._update_progress_counts(discovering=True)
                 if on_progress:
                     on_progress(self.stats)
@@ -267,36 +285,51 @@ class BackupJob:
             if on_progress:
                 on_progress(self.stats)
 
-            self.stats.phase = "copy"
+            self._set_phase("copy")
             self.stats.found = len(candidates)
             self._reset_throughput()
             self._update_progress_counts(discovering=False)
             if on_progress:
                 on_progress(self.stats)
 
+            # One load per backup job — avoids per-file full-table pHash scans.
+            near_index = self.catalog.load_near_dup_index()
+
             for path, kind in candidates:
                 self._check()
                 self.stats.current = str(path)
+                processed = self.stats.copied + self.stats.skipped + self.stats.errors
+                if processed == 0 or (processed + 1) % _DEBUG_FILE_SAMPLE == 0:
+                    _log.debug("event=current_file phase=copy path=%s", path)
                 if on_progress:
                     on_progress(self.stats)
                 try:
-                    self._process_file(path, kind)
+                    self._process_file(path, kind, near_index)
                 except BackupCancelled:
                     raise
                 except BackupStorageError:
                     raise
                 except OSError as exc:
-                    if _is_storage_oserror(exc):
+                    if _is_storage_oserror(exc, self._library):
+                        _log.error(
+                            "event=disk_error path=%s errno=%s winerror=%s error=%s",
+                            path,
+                            exc.errno,
+                            getattr(exc, "winerror", None),
+                            exc,
+                        )
                         raise BackupStorageError(_storage_message(exc)) from exc
                     self.stats.errors += 1
                     self.stats.error_messages.append(f"{path}: {exc}")
                     if len(self.stats.error_messages) > 50:
                         self.stats.error_messages.pop(0)
+                    _log.error("event=file_error path=%s error=%s", path, exc)
                 except Exception as exc:
                     self.stats.errors += 1
                     self.stats.error_messages.append(f"{path}: {exc}")
                     if len(self.stats.error_messages) > 50:
                         self.stats.error_messages.pop(0)
+                    _log.error("event=file_error path=%s error=%s", path, exc)
                 self._update_progress_counts(discovering=False)
                 if on_progress:
                     on_progress(self.stats)
@@ -306,9 +339,11 @@ class BackupJob:
             self.stats.errors += 1
             if not self.stats.error_messages or self.stats.error_messages[-1] != exc.message:
                 self.stats.error_messages.append(exc.message)
+            _log.error("event=backup_aborted reason=%s", exc.message)
         except BackupCancelled:
             if not self.stats.abort_reason:
                 self.stats.current = "Cancelled"
+            _log.info("event=backup_cancelled")
         finally:
             self.catalog.finish_backup(
                 backup_id,
@@ -317,7 +352,7 @@ class BackupJob:
                 self.stats.errors,
                 self.stats.bytes_copied,
             )
-            self.stats.phase = "done"
+            self._set_phase("done")
             self.stats.finished = True
             if self.stats.total is None and self.stats.found:
                 self.stats.total = self.stats.found
@@ -326,6 +361,19 @@ class BackupJob:
                     self.stats.copied + self.stats.skipped + self.stats.errors
                 )
                 self.stats.remaining = max(0, self.stats.total - self.stats.processed)
+            _log.info(
+                "event=backup_end backup_id=%s found=%s copied=%s skipped=%s "
+                "held_for_review=%s proposed_near=%s errors=%s bytes=%s abort=%s",
+                backup_id,
+                self.stats.found,
+                self.stats.copied,
+                self.stats.skipped,
+                self.stats.held_for_review,
+                self.stats.proposed_near,
+                self.stats.errors,
+                self.stats.bytes_copied,
+                self.stats.abort_reason or "",
+            )
             if on_progress:
                 on_progress(self.stats)
         return self.stats
@@ -335,19 +383,35 @@ class BackupJob:
         estimated = _estimate_candidate_bytes(candidates)
         self.stats.estimated_bytes = estimated
         try:
-            level, _free, _total, message = assess_library_space(estimated)
+            level, free, _total, message = assess_library_space(estimated)
         except OSError as exc:
+            _log.error(
+                "event=disk_error stage=preflight errno=%s winerror=%s error=%s",
+                exc.errno,
+                getattr(exc, "winerror", None),
+                exc,
+            )
             raise BackupStorageError(
                 "Cannot read free space on the library drive. "
                 "Is the USB still connected?\n\n"
                 f"({exc})"
             ) from exc
         if level == "block":
+            _log.error(
+                "event=disk_error stage=preflight level=block free=%s estimated=%s",
+                free,
+                estimated,
+            )
             raise BackupStorageError(message)
         if level == "warn":
             self.stats.space_warning = message
+            _log.info(
+                "event=space_warning free=%s estimated=%s",
+                free,
+                estimated,
+            )
 
-    def _process_file(self, path: Path, kind: str) -> None:
+    def _process_file(self, path: Path, kind: str, near_index: NearDupIndex) -> None:
         size = path.stat().st_size
         qk = quick_key(path, size)
         known = self.catalog.hash_for_quick_key(qk)
@@ -362,7 +426,9 @@ class BackupJob:
             return
 
         phash = perceptual_hash(path) if kind == "photo" else None
-        near = self.catalog.find_near_duplicate(phash) if phash else None
+        near = (
+            self.catalog.find_near_duplicate(phash, index=near_index) if phash else None
+        )
         # Near-duplicates are never skipped or deleted here. They are copied
         # (into the library or review/) and queued for the Review page.
 
@@ -413,6 +479,15 @@ class BackupJob:
             people_tags=tags,
             created_at=meta["created_at"],
         )
+        if phash:
+            # Keep the job-local index current so later files see this copy.
+            near_index.add(
+                sha256=digest,
+                phash=phash,
+                is_primary=1,
+                size=size,
+                id=0,
+            )
         if near:
             self.catalog.enqueue_near_pair(digest, near["sha256"])
         self.stats.copied += 1

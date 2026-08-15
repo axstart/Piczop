@@ -155,6 +155,12 @@ def drive_free_bytes(path: Path | None = None) -> tuple[int, int]:
     return du.free, du.total
 
 
+# Soft warn / hard floor for library-drive free space (AX degradation).
+LOW_SPACE_WARN_BYTES = 500 * 1024 * 1024  # 500 MB
+LOW_SPACE_BLOCK_BYTES = 50 * 1024 * 1024  # 50 MB absolute floor
+COPY_SPACE_MARGIN_BYTES = 64 * 1024 * 1024  # headroom for catalog/thumbs
+
+
 def format_bytes(n: int) -> str:
     units = ["B", "KB", "MB", "GB", "TB"]
     value = float(n)
@@ -165,6 +171,53 @@ def format_bytes(n: int) -> str:
             return f"{value:.1f} {unit}"
         value /= 1024
     return f"{n} B"
+
+
+def assess_library_space(needed_bytes: int | None = None) -> tuple[str, int, int, str]:
+    """Classify library free space.
+
+    Returns (level, free, total, message) where level is ``ok``, ``warn``, or ``block``.
+    When ``needed_bytes`` is known (sum of found file sizes), block if free space
+    cannot cover that estimate plus a small margin.
+    """
+    free, total = drive_free_bytes()
+    if needed_bytes is not None and needed_bytes > 0:
+        required = needed_bytes + COPY_SPACE_MARGIN_BYTES
+        if free < required:
+            return (
+                "block",
+                free,
+                total,
+                (
+                    f"Not enough free space for this backup. "
+                    f"Found files total about {format_bytes(needed_bytes)} "
+                    f"(plus {format_bytes(COPY_SPACE_MARGIN_BYTES)} headroom), "
+                    f"but only {format_bytes(free)} is free. "
+                    f"Exact duplicates already on the stick will not need that space — "
+                    f"free up room or use a larger drive."
+                ),
+            )
+    if free < LOW_SPACE_BLOCK_BYTES:
+        return (
+            "block",
+            free,
+            total,
+            (
+                f"Not enough free space ({format_bytes(free)}). "
+                f"Free up at least {format_bytes(LOW_SPACE_BLOCK_BYTES)} before backing up."
+            ),
+        )
+    if free < LOW_SPACE_WARN_BYTES:
+        return (
+            "warn",
+            free,
+            total,
+            (
+                f"Only {format_bytes(free)} free on the library drive. "
+                f"Backup may fail if the drive fills up."
+            ),
+        )
+    return ("ok", free, total, "")
 
 
 def kind_for_suffix(suffix: str) -> str | None:

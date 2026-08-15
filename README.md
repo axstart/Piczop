@@ -54,6 +54,21 @@ On first run, when the app folder is writable, Piczop creates `PiczopLibrary\` n
 - **Portable / USB / any writable folder:** `PiczopLibrary` next to `Piczop.exe` (stays on the stick).
 - **Program Files (or other read-only install dir):** `%LOCALAPPDATA%\Piczop\PiczopLibrary` so backups work without admin write access.
 
+### Graceful degradation (disk / USB)
+
+| Condition | Behavior |
+| --- | --- |
+| Library folder not writable next to the exe (e.g. Program Files) | Fall back to `%LOCALAPPDATA%\Piczop\PiczopLibrary` |
+| Free space under ~500 MB | Home shows a low-space warning; **Back up now** asks before starting (you can cancel) |
+| Free space under ~50 MB, or estimated found-file sizes exceed free space | Backup is blocked with a clear message (after scan when sizes are known) |
+| Drive full or USB removed mid-copy | Backup cancels immediately with one message — it does not spam hundreds of per-file errors |
+
+Pause / cancel still work as usual. Near-duplicate review stays human-in-the-loop.
+
+### Local logs (privacy)
+
+Diagnostics stay on disk only: `PiczopLibrary\logs\piczop.log` (rotated / size-capped). Piczop does **not** phone home — no network logging or telemetry.
+
 ### Windows installer
 
 ```powershell
@@ -76,6 +91,7 @@ Layout on the stick:
 - `PiczopLibrary\catalog.db`
 - `PiczopLibrary\thumbs\`
 - `PiczopLibrary\settings.json`
+- `PiczopLibrary\logs\piczop.log` (local diagnostics only)
 
 ## How duplicates work (human in the loop)
 

@@ -6,7 +6,8 @@ from pathlib import Path
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
-from app.paths import library_root
+from app.logging_setup import get_logger, setup_logging
+from app.paths import library_root, resolve_library_root
 from app.ui.main_window import MainWindow
 
 
@@ -26,7 +27,11 @@ def _icon_path() -> Path | None:
 
 
 def main() -> int:
-    library_root()
+    _resolved, first_run = resolve_library_root()
+    root = library_root()
+    setup_logging(root, first_run=first_run)
+    log = get_logger()
+    log.info("event=app_start")
     app = QApplication(sys.argv)
     app.setApplicationName("Piczop")
     icon = _icon_path()

@@ -6,7 +6,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
-from app.hashing import NEAR_DUP_HAMMING, hamming_hex
+from app.hashing import NEAR_DUP_HAMMING, NearDupIndex
 from app.paths import catalog_path, trash_root
 
 
@@ -15,6 +15,7 @@ STATUS_CONFIRMED = "confirmed_duplicate"
 STATUS_DISMISSED = "dismissed"
 STATUS_MERGED = "merged"
 
+# Relational metadata only — thumbnails live on disk under library/thumbs/, never BLOBs.
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS files (
     id INTEGER PRIMARY KEY,
@@ -126,13 +127,39 @@ class Catalog:
 
     @contextmanager
     def connect(self):
-        conn = sqlite3.connect(self.db_path)
+        # WAL + busy_timeout: catalog often lives on USB; tolerate brief locks/flakes.
+        conn = sqlite3.connect(self.db_path, timeout=30.0)
         conn.row_factory = sqlite3.Row
         try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=30000")
+            conn.execute("PRAGMA synchronous=NORMAL")
             yield conn
             conn.commit()
         finally:
             conn.close()
+
+    def load_near_dup_index(self) -> NearDupIndex:
+        """Load all active photo pHashes once (e.g. start of a backup job)."""
+        index = NearDupIndex()
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, sha256, phash, COALESCE(is_primary, 1) AS is_primary, size
+                FROM files
+                WHERE phash IS NOT NULL AND kind = 'photo' AND COALESCE(trashed, 0) = 0
+                ORDER BY is_primary DESC, size DESC, id ASC
+                """
+            ).fetchall()
+        for row in rows:
+            index.add(
+                sha256=row["sha256"],
+                phash=row["phash"],
+                is_primary=row["is_primary"],
+                size=row["size"],
+                id=row["id"],
+            )
+        return index
 
     def has_hash(self, sha256: str) -> bool:
         with self.connect() as conn:
@@ -225,28 +252,22 @@ class Catalog:
             )
 
     def find_near_duplicate(
-        self, phash: str | None, threshold: int = NEAR_DUP_HAMMING
-    ) -> sqlite3.Row | None:
+        self,
+        phash: str | None,
+        threshold: int = NEAR_DUP_HAMMING,
+        index: NearDupIndex | None = None,
+    ) -> sqlite3.Row | dict | None:
         if not phash:
             return None
-        with self.connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT * FROM files
-                WHERE phash IS NOT NULL AND kind = 'photo' AND COALESCE(trashed, 0) = 0
-                ORDER BY is_primary DESC, size DESC, id ASC
-                """
-            ).fetchall()
-        best = None
-        best_dist = threshold + 1
-        for row in rows:
-            dist = hamming_hex(phash, row["phash"])
-            if dist <= threshold and dist < best_dist:
-                best = row
-                best_dist = dist
-                if dist == 0:
-                    break
-        return best
+        if index is not None:
+            hit = index.find(phash, threshold=threshold)
+            return hit.as_row() if hit else None
+        # One-shot callers: build a band index for this lookup instead of O(n) scan.
+        built = self.load_near_dup_index()
+        hit = built.find(phash, threshold=threshold)
+        if not hit:
+            return None
+        return self.get_file(hit.sha256)
 
     def mark_duplicate(self, sha256: str, primary_sha: str) -> None:
         with self.connect() as conn:
@@ -788,7 +809,21 @@ class Catalog:
                 ORDER BY size DESC, id ASC
                 """
             ).fetchall()
-        parent = list(range(len(rows)))
+        if not rows:
+            return []
+
+        index = NearDupIndex()
+        row_by_sha = {row["sha256"]: row for row in rows}
+        for row in rows:
+            index.add(
+                sha256=row["sha256"],
+                phash=row["phash"],
+                is_primary=row["is_primary"] if row["is_primary"] is not None else 1,
+                size=row["size"],
+                id=row["id"],
+            )
+
+        parent = list(range(len(index)))
 
         def find(i: int) -> int:
             while parent[i] != i:
@@ -801,14 +836,14 @@ class Catalog:
             if ra != rb:
                 parent[rb] = ra
 
-        for i, left in enumerate(rows):
-            for j in range(i + 1, len(rows)):
-                if hamming_hex(left["phash"], rows[j]["phash"]) <= threshold:
-                    union(i, j)
+        # Band-bucket candidate pairs — same HITL groups, without O(n²) full scan.
+        for a, b in index.candidate_pairs(threshold=threshold):
+            union(a, b)
 
+        entries = index.entries()
         buckets: dict[int, list[sqlite3.Row]] = {}
-        for i, row in enumerate(rows):
-            buckets.setdefault(find(i), []).append(row)
+        for i, entry in enumerate(entries):
+            buckets.setdefault(find(i), []).append(row_by_sha[entry.sha256])
         groups = [g for g in buckets.values() if len(g) > 1]
         groups.sort(key=lambda g: g[0]["taken_at"] or "", reverse=True)
         return groups

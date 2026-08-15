@@ -9,6 +9,7 @@ from app.paths import library_root
 
 
 def thumb_path(sha256: str) -> Path:
+    """On-disk JPEG path — thumbs are never stored as SQLite BLOBs."""
     return library_root() / "thumbs" / f"{sha256}.jpg"
 
 
